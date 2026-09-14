@@ -17,8 +17,16 @@ use Laravel\Mcp\Server\Tool;
 
     Dates and times you send and receive are the restaurant's local wall-clock
     time — what a diner means when they say "seven o'clock". Bookings start on a
-    fixed grid, for example every 30 minutes. Call `check_availability` if you
-    need to know the timezone, the grid size or today's opening hours.
+    fixed grid, for example every 30 minutes.
+
+    **The restaurant's date is probably not yours.** It keeps its own timezone,
+    and for part of every day the calendar date there differs from the one you
+    are working from. So never turn "tomorrow", "tonight" or "this weekend" into
+    a date yourself: either send the customer's own words in `natural_time` and
+    let this server resolve them, or read `today` from `check_availability` first
+    and count from that. Each tool's description also states the current local
+    time. A booking made for the wrong day is worse than one you had to ask
+    about.
 
     When a requested time is full this server does NOT return an error. It
     returns `status: "unavailable"` along with the nearest alternative times that

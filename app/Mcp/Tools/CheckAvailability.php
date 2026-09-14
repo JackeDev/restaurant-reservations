@@ -4,11 +4,13 @@ namespace App\Mcp\Tools;
 
 use App\Contracts\SlotAllocator;
 use App\Data\DwellWindow;
+use App\Mcp\Concerns\ReportsFailures;
 use App\Services\OpeningHours;
 use App\Support\RestaurantClock;
 use Carbon\CarbonImmutable;
 use Illuminate\Contracts\JsonSchema\JsonSchema;
 use Illuminate\JsonSchema\Types\Type;
+use Illuminate\Validation\ValidationException;
 use Laravel\Mcp\Request;
 use Laravel\Mcp\Response;
 use Laravel\Mcp\ResponseFactory;
@@ -18,6 +20,7 @@ use Laravel\Mcp\Server\Attributes\Title;
 use Laravel\Mcp\Server\Tool;
 use Laravel\Mcp\Server\Tools\Annotations\IsIdempotent;
 use Laravel\Mcp\Server\Tools\Annotations\IsReadOnly;
+use Throwable;
 
 #[Name('check_availability')]
 #[Title('Check availability')]
@@ -35,6 +38,8 @@ use Laravel\Mcp\Server\Tools\Annotations\IsReadOnly;
 #[IsIdempotent]
 class CheckAvailability extends Tool
 {
+    use ReportsFailures;
+
     /**
      * Local midnight: the anchor every calculation about a calendar date starts
      * from, since the slot grid and the opening-hours weekday are both defined
@@ -49,13 +54,25 @@ class CheckAvailability extends Tool
     ) {}
 
     /**
+     * Stamped with the restaurant's current local time, resolved per request.
+     * See MakeReservation::description() for why.
+     */
+    public function description(): string
+    {
+        return parent::description()."\n\n".sprintf(
+            'It is currently %s. Resolve "today", "tomorrow" and similar against that, not against your own clock.',
+            $this->clock->describeNow(),
+        );
+    }
+
+    /**
      * @return array<string, Type>
      */
     public function schema(JsonSchema $schema): array
     {
         return [
             'date' => $schema->string()->format('date')->required()
-                ->description('Local calendar date to check, YYYY-MM-DD.'),
+                ->description('Date to check in the restaurant\'s timezone, YYYY-MM-DD — which may not be the date where you are.'),
 
             'party_size' => $schema->integer()->min(1)->max(20)->required()
                 ->description('How many guests need seating.'),
@@ -70,6 +87,14 @@ class CheckAvailability extends Tool
         return [
             'date' => $schema->string()->required(),
             'timezone' => $schema->string()->required(),
+
+            // The authoritative answer to "what day is it?", so an agent whose
+            // own clock sits in another timezone never has to guess.
+            'today' => $schema->string()->required()
+                ->description('The current date at the restaurant. Resolve "tomorrow" and similar against this.'),
+
+            'date_is' => $schema->string()->required()
+                ->description('The date you asked about, in words relative to the restaurant\'s today — for example "Monday, tomorrow". Check it against what the customer actually said before going further.'),
             'slot_minutes' => $schema->integer()->required()
                 ->description('Bookings start every this many minutes.'),
             'opening_hours' => $schema->array()->items($schema->string())->required()
@@ -88,13 +113,26 @@ class CheckAvailability extends Tool
         ];
     }
 
-    public function handle(Request $request): ResponseFactory
+    public function handle(Request $request): ResponseFactory|Response
     {
+        // Left outside the try: the package renders a validation failure as a
+        // readable per-field message, which beats a correlation id here.
         ['date' => $date, 'party_size' => $partySize] = $request->validate([
             'date' => ['required', 'date_format:Y-m-d'],
             'party_size' => ['required', 'integer', 'between:1,20'],
         ]);
 
+        try {
+            return $this->availabilityOn($date, $partySize);
+        } catch (ValidationException $e) {
+            throw $e;
+        } catch (Throwable $e) {
+            return $this->failed($e);
+        }
+    }
+
+    private function availabilityOn(string $date, int $partySize): ResponseFactory
+    {
         $slots = $this->bookableSlotsOn($date);
 
         if ($slots === []) {
@@ -153,11 +191,15 @@ class CheckAvailability extends Tool
      */
     private function respond(string $date, array $available, ?string $reason): ResponseFactory
     {
+        $startOfDay = $this->clock->parseLocal($date, self::LOCAL_DAY_START);
+
         $payload = [
             'date' => $date,
             'timezone' => $this->clock->timezone(),
+            'today' => $this->clock->localDate($this->clock->now()),
+            'date_is' => $this->clock->describeDate($startOfDay),
             'slot_minutes' => (int) config('restaurant.slot_minutes'),
-            'opening_hours' => $this->openingHours->describeFor($this->clock->parseLocal($date, self::LOCAL_DAY_START)),
+            'opening_hours' => $this->openingHours->describeFor($startOfDay),
             'available' => $available,
         ];
 

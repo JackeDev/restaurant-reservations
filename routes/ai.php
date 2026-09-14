@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Middleware\AssignCorrelationId;
 use App\Mcp\Servers\ReservationServer;
 use Laravel\Mcp\Facades\Mcp;
 
@@ -10,7 +11,10 @@ use Laravel\Mcp\Facades\Mcp;
  *
  * Do not register this file in bootstrap/app.php — the package already loads it.
  */
-Mcp::web('/mcp', ReservationServer::class)->middleware(['throttle:mcp']);
+Mcp::web('/mcp', ReservationServer::class)->middleware([
+    AssignCorrelationId::class,
+    'throttle:mcp',
+]);
 
 /*
  * Lets an MCP client launch the server over stdio:

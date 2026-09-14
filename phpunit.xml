@@ -25,6 +25,19 @@
         <env name="CACHE_STORE" value="array"/>
         <env name="DB_DATABASE" value="testing"/>
         <env name="DB_URL" value=""/>
+        <!--
+            The seat allocator talks to a real Redis, so tests get their own
+            database on it. Without this, a test run would wipe the counters the
+            development stack is using.
+        -->
+        <env name="REDIS_RESERVATIONS_DB" value="15"/>
+        <!--
+            The app logs to stderr, which is right in a container and wrong in a
+            test run: every booking a test makes would print a JSON line into the
+            middle of the results. Tests that assert on logging use Log::spy(),
+            which replaces the logger outright, so nothing is lost here.
+        -->
+        <env name="LOG_STACK" value="null"/>
         <env name="MAIL_MAILER" value="array"/>
         <env name="QUEUE_CONNECTION" value="sync"/>
         <env name="SESSION_DRIVER" value="array"/>

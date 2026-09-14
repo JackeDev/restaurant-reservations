@@ -179,6 +179,40 @@ return [
             'backoff_cap' => env('REDIS_BACKOFF_CAP', 1000),
         ],
 
+        /*
+         * Dedicated connection for the seat allocator, on its own database and
+         * with key prefixing switched off.
+         *
+         * The database is the substantive part: seat counters do not share space
+         * with the cache or sessions, so clearing the cache cannot wipe the
+         * restaurant's capacity.
+         *
+         * Dropping the prefix is belt and braces. The allocator writes counters
+         * from inside a Lua script and reads them back with a plain MGET, and
+         * whether those two address the same key is a property of the client
+         * rather than of our code — phpredis 6.3 prefixes eval and evalsha keys
+         * as well as ordinary ones, so they do agree, but that is version- and
+         * client-specific. With no prefix the question cannot arise, and the
+         * keys stay readable in redis-cli: res:seats:{main}:2026-09-18T19:00.
+         *
+         * `reservations:doctor` pins the round trip, so a client that ever
+         * behaved differently would be caught rather than silently splitting
+         * every counter in two.
+         */
+        'reservations' => [
+            'url' => env('REDIS_URL'),
+            'host' => env('REDIS_HOST', '127.0.0.1'),
+            'username' => env('REDIS_USERNAME'),
+            'password' => env('REDIS_PASSWORD'),
+            'port' => env('REDIS_PORT', '6379'),
+            'database' => env('REDIS_RESERVATIONS_DB', '2'),
+            'prefix' => '',
+            'max_retries' => env('REDIS_MAX_RETRIES', 3),
+            'backoff_algorithm' => env('REDIS_BACKOFF_ALGORITHM', 'decorrelated_jitter'),
+            'backoff_base' => env('REDIS_BACKOFF_BASE', 100),
+            'backoff_cap' => env('REDIS_BACKOFF_CAP', 1000),
+        ],
+
     ],
 
 ];

@@ -79,6 +79,52 @@ final class RestaurantClock
     }
 
     /**
+     * The current moment, spelled out in the restaurant's own terms.
+     *
+     * Exists because an MCP client has its own idea of "today", usually UTC, and
+     * a restaurant five hours behind it spends five hours of every day
+     * disagreeing. A model that resolves "tomorrow" against its own clock during
+     * those hours books the wrong day, so we state ours wherever it will read it.
+     */
+    public function describeNow(): string
+    {
+        return sprintf(
+            '%s (%s)',
+            $this->toLocal($this->now())->format('l Y-m-d H:i'),
+            $this->timezone(),
+        );
+    }
+
+    /**
+     * A date in words, relative to today at the restaurant: "Monday, tomorrow".
+     *
+     * Stating dates twice is deliberate. Asking a model to notice that
+     * 2026-09-15 is not the day after 2026-09-13 is asking it to do calendar
+     * arithmetic, which is what it is worst at; asking it to notice that the
+     * customer said "tomorrow" while the answer says "in 2 days" is asking it to
+     * read, which is what it is best at. The phrasing is the check.
+     *
+     * @param  CarbonImmutable  $utc  UTC.
+     */
+    public function describeDate(CarbonImmutable $utc): string
+    {
+        $date = $this->toLocal($utc)->startOfDay();
+        $today = $this->toLocal($this->now())->startOfDay();
+
+        $days = (int) round($today->diffInDays($date, false));
+
+        $relative = match (true) {
+            $days === 0 => 'today',
+            $days === 1 => 'tomorrow',
+            $days === -1 => 'yesterday',
+            $days > 1 => "in {$days} days",
+            default => abs($days).' days ago',
+        };
+
+        return $date->format('l').', '.$relative;
+    }
+
+    /**
      * The local three-letter weekday key used by the opening-hours config.
      */
     public function localWeekday(CarbonImmutable $utc): string
