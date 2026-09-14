@@ -25,7 +25,8 @@ zeros. [How it was measured](#performance).
 
 ## Contents
 
-- **[Quick start](#quick-start)** — `cp .env.example .env`, `sail up`, and nothing else
+- **[Quick start](#quick-start)** — `composer install` in a container, then
+  `cp .env.example .env` and `sail up`. Nothing else
 - [Calling the tool by hand](#calling-the-tool-by-hand) — curl for both tools and
   [both response shapes](#when-the-time-is-full), then
   [connecting any MCP client](#from-an-mcp-client) *(including
@@ -52,13 +53,43 @@ zeros. [How it was measured](#performance).
 ## Quick start
 
 ```bash
+# 1. Install dependencies. Sail itself lives in vendor/, so this step cannot be
+#    `sail` anything — a one-off container does it with no PHP on your machine.
+docker run --rm -e COMPOSER_PROCESS_TIMEOUT=0 \
+    -v "$(pwd):/var/www/html" -w /var/www/html \
+    laravelsail/php84-composer:latest \
+    composer install --ignore-platform-reqs
+
+# 2. Start everything.
 cp .env.example .env
 ./vendor/bin/sail up
 ```
 
-That is the whole setup. `sail up` starts PostgreSQL, Redis and the app, then
-runs migrations and seeds before the app accepts traffic — a one-shot `app-init`
-service handles it, so there is no manual step to forget.
+**Why step 1 exists:** `vendor/` is not committed, and on a fresh clone that
+takes two things with it — `./vendor/bin/sail`, and the Docker build context
+`compose.yaml` points at (`./vendor/laravel/sail/runtimes/8.5`). So a clone
+cannot run `sail`, and cannot run `docker compose up` either. If you already have
+PHP 8.3+ and Composer locally, a plain `composer install` does the same job.
+
+<details>
+<summary>The three flags are all load-bearing</summary>
+
+- `--ignore-platform-reqs` — the image ships PHP 8.4 while the container runs
+  8.5. Dependencies only require `^8.3`, so this just stops Composer refusing
+  over the mismatch.
+- `COMPOSER_PROCESS_TIMEOUT=0` — unzipping a large dependency onto a Docker
+  Desktop bind mount is slow enough to pass Composer's 300-second default and
+  abort the install at 139 packages of 140. Measured here, on Windows; macOS has
+  the same class of filesystem.
+- On **Windows in Git Bash**, prefix the command with `MSYS_NO_PATHCONV=1`, or
+  the shell rewrites `/var/www/html` into a Windows path before Docker sees it.
+
+</details>
+
+After that, `sail up` is the whole setup: it starts PostgreSQL, Redis and the
+app, generates `APP_KEY` if it is missing, then runs migrations and seeds before
+the app accepts traffic — a one-shot `app-init` service handles it, so there is
+no manual step to forget.
 
 The server is at **`http://localhost:8080/mcp`**.
 
