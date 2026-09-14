@@ -4,26 +4,73 @@ services:
             context: ./vendor/laravel/sail/runtimes/8.5
             dockerfile: Dockerfile
             args:
-                WWWGROUP: '${WWWGROUP}'
+                WWWGROUP: '${WWWGROUP:-1000}'
         image: sail-8.5/app
         extra_hosts:
             - 'host.docker.internal:host-gateway'
         ports:
             - '${APP_PORT:-80}:80'
-            - '${VITE_PORT:-5173}:${VITE_PORT:-5173}'
         environment:
-            WWWUSER: '${WWWUSER}'
+            WWWUSER: '${WWWUSER:-1000}'
             LARAVEL_SAIL: 1
+            # Only affects the `artisan serve` baseline of the A/B comparison.
+            # Octane ignores it. Giving the baseline as many processes as Octane
+            # has workers is what makes the comparison about the runtime rather
+            # than about process count.
+            PHP_CLI_SERVER_WORKERS: '${PHP_CLI_SERVER_WORKERS:-1}'
             XDEBUG_MODE: '${SAIL_XDEBUG_MODE:-off}'
             XDEBUG_CONFIG: '${SAIL_XDEBUG_CONFIG:-client_host=host.docker.internal}'
             IGNITION_LOCAL_SITES_PATH: '${PWD}'
+            # Setting SUPERVISOR_PHP_COMMAND in .env
+            # falls back to PHP's built-in server for the performance comparison.
+            #
+            # max-requests recycles a worker to cap any slow memory leak. At 1000 the
+            # recycling itself cost more than it insured against: each reboot stalled
+            # its worker, and under load that showed up as a p99 of 1.9s against a
+            # median of 237ms. At 10000 the same run gave p99 512ms and 53% more
+            # throughput, and it is still a safety net.
+            SUPERVISOR_PHP_COMMAND: '${SUPERVISOR_PHP_COMMAND:-php artisan octane:start --server=swoole --host=0.0.0.0 --port=80 --workers=${OCTANE_WORKERS:-auto} --max-requests=${OCTANE_MAX_REQUESTS:-10000}}'
         volumes:
             - '.:/var/www/html'
         networks:
             - sail
         depends_on:
-            - pgsql
-            - redis
+            pgsql:
+                condition: service_healthy
+            redis:
+                condition: service_healthy
+            app-init:
+                condition: service_completed_successfully
+    app-init:
+        build:
+            context: ./vendor/laravel/sail/runtimes/8.5
+            dockerfile: Dockerfile
+            args:
+                WWWGROUP: '${WWWGROUP:-1000}'
+        image: sail-8.5/app
+        restart: 'no'
+        environment:
+            WWWUSER: '${WWWUSER:-1000}'
+            LARAVEL_SAIL: 1
+        volumes:
+            - '.:/var/www/html'
+        networks:
+            - sail
+        depends_on:
+            pgsql:
+                condition: service_healthy
+            redis:
+                condition: service_healthy
+        # Runs once per `sail up` and exits, so a fresh clone needs no manual
+        # setup. The seeder is idempotent for exactly this reason.
+        #
+        # key:generate only runs when the key is actually missing. Regenerating
+        # it on every boot would be a silent way to invalidate anything the app
+        # had encrypted with the old one.
+        entrypoint:
+            - bash
+            - '-c'
+            - 'grep -q "^APP_KEY=base64:" .env || php artisan key:generate --force --no-interaction; php artisan migrate --force --seed'
     pgsql:
         image: 'postgres:18-alpine'
         ports:
@@ -64,6 +111,21 @@ services:
                 - ping
             retries: 3
             timeout: 5s
+    k6:
+        image: 'grafana/k6:latest'
+        profiles:
+            - perf
+        volumes:
+            - './perf:/perf'
+        networks:
+            - sail
+        environment:
+            BASE_URL: 'http://laravel.test'
+        entrypoint:
+            - k6
+        command:
+            - run
+            - /perf/make-reservation.js
 networks:
     sail:
         driver: bridge

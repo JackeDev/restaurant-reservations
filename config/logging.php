@@ -1,5 +1,6 @@
 <?php
 
+use Illuminate\Log\Formatters\JsonFormatter;
 use Monolog\Handler\NullHandler;
 use Monolog\Handler\StreamHandler;
 use Monolog\Handler\SyslogUdpHandler;
@@ -63,6 +64,37 @@ return [
             'path' => storage_path('logs/laravel.log'),
             'level' => env('LOG_LEVEL', 'debug'),
             'replace_placeholders' => true,
+
+            /*
+             * One JSON object per line, so the log is queryable rather than
+             * merely readable:
+             *
+             *   jq 'select(.extra.correlation_id == "01K7B8ZQ4X")' < laravel.log
+             *   jq -c 'select(.message == "reservation.rejected") | .context' < laravel.log
+             *
+             * Note where things land. What a caller passes to Log::info() is
+             * "context"; what AssignCorrelationId put into Context arrives in
+             * "extra", because the framework attaches it with a Monolog
+             * processor rather than merging it into the call's own array. The
+             * correlation id is therefore .extra.correlation_id — which is what
+             * lets one request be pulled out of a file holding thousands.
+             *
+             * Laravel's subclass rather than Monolog's own: it enriches a logged
+             * exception with the context the exception and the handler carry,
+             * which is the whole point of logging one.
+             *
+             * Set LOG_JSON=false for a human-readable file instead. `sail
+             * artisan pail` is unaffected either way, since it installs its own
+             * handler rather than reading this file.
+             *
+             * ⚠ This channel is NOT the default — `stderr` is. storage/logs sits
+             * on the bind mount, so every line written here crosses to the host
+             * filesystem, and under load that is slow enough to block the
+             * workers: measured at 169 req/s against 584 with the same code
+             * logging to stderr. Use this channel for a local file when you want
+             * one, not for a run you intend to measure.
+             */
+            'formatter' => env('LOG_JSON', true) ? JsonFormatter::class : 'default',
         ],
 
         'daily' => [

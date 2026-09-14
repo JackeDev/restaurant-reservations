@@ -1,7 +1,11 @@
 <?php
 
-test('the application returns a successful response', function () {
-    $response = $this->get('/');
+test('the root route advertises the MCP endpoint', function () {
+    $this->get('/')
+        ->assertOk()
+        ->assertJsonStructure(['name', 'mcp', 'health']);
+});
 
-    $response->assertStatus(200);
+test('the health endpoint responds', function () {
+    $this->get('/up')->assertOk();
 });

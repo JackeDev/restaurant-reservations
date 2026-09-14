@@ -1,8 +1,10 @@
 *.log
 .DS_Store
+# Every .env variant is ignored, not just the three Laravel ships with: a stray
+# .env.bak or .env.local holds the same secrets as .env itself.
 .env
-.env.backup
-.env.production
+.env.*
+!.env.example
 .phpactor.json
 .phpunit.result.cache
 /.codex
