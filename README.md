@@ -31,6 +31,9 @@ zeros. [How it was measured](#performance).
   [connecting any MCP client](#from-an-mcp-client) *(including
   [why `localhost` fails for ChatGPT](#localhost-depends-on-who-dials-not-on-where-the-window-is))*
 - [Input reference](#input-reference) — every field, and what enforces it
+- [The same booking, by telephone](#the-same-booking-by-telephone) — one service
+  behind two transports, and
+  [what a phone call changes](#what-a-phone-call-changes-and-what-it-does-not)
 - **[Performance](#performance)** — [how it was measured](#how-it-was-measured) ·
   [the A/B results](#results) · [correctness under that load](#correctness-under-that-load) ·
   [the test suite](#the-test-suite) · [nothing leaks between requests](#nothing-leaks-between-requests)
@@ -279,6 +282,112 @@ To exercise the tools without wiring up a client at all:
 Every field is validated twice on purpose: the JSON Schema tells the model what
 to send, and Laravel's validator enforces the contract regardless of what
 actually arrives.
+
+---
+
+## The same booking, by telephone
+
+Voice-agent integration is one of the optional extras in the brief, and it is the
+one that tests the architecture rather than adding to it: if the booking rules
+really do live in a single place, a second transport should cost a mapping and
+nothing more.
+
+[`POST /webhooks/vapi`](app/Http/Controllers/VapiWebhookController.php) is that
+second transport. [Vapi](https://vapi.ai) runs the phone call and the speech;
+when its agent has agreed a booking out loud, it posts the tool call here. From
+the mapping down this is the code the MCP tool already runs — the same
+`ReservationDraft`, the same `ReservationService`, the same atomic Lua script.
+There is no second copy of the rules and no second way of taking seats. One line
+differs, the channel, so `created_via` records which transport sold each table.
+
+```bash
+curl -sS http://localhost:8080/webhooks/vapi \
+  -H 'Content-Type: application/json' \
+  -H 'X-Vapi-Secret: change-me' \
+  -d '{"message":{"type":"tool-calls","toolCallList":[
+        {"id":"toolu_1","name":"make_reservation","arguments":{
+          "customer_name":"Ana Garcia","customer_email":"ana@example.com",
+          "party_size":4,"natural_time":"tomorrow at 8pm"}}]}}'
+```
+
+```json
+{"results":[{"toolCallId":"toolu_1","result":"Booked: Ana Garcia, 4 people, tomorrow at 8:00 PM. The table is held until 9:30 PM. Reference RSV-01M2F8KMNG99598J64WQKZ42MW — for the record; no need to read it out unless the customer asks."}]}
+```
+
+### What a phone call changes, and what it does not
+
+Only the presentation, and it changes for one reason: this sentence is about to
+be read out loud.
+
+| | MCP client | Telephone |
+|---|---|---|
+| The answer | structured JSON, for a model to reason over | one sentence, for a model to speak |
+| A time | `"date": "2026-10-14"`, `"time": "20:00"` | "tomorrow at 8:00 PM" |
+| A full slot | `status: "unavailable"` with `alternatives[]` | the same alternatives, said as an offer |
+| A failure | quote this reference to have it looked up | apologise; the call id is already in the log |
+
+The last two rows are the ones worth reading twice.
+
+**A full slot is an offer, not a refusal.** The service has already worked out
+which nearby times can seat the party for their whole stay, so the agent is
+handed the next thing to say rather than a dead end — which is the conversation a
+person taking the booking would have anyway:
+
+```json
+{"results":[{"toolCallId":"toolu_1","result":"There is no table for 2 at 20:00 on 2026-10-14. Offer one of these instead: Wednesday 14 October at 7:00 PM, 9:30 PM or 10:00 PM."}]}
+```
+
+One option before the requested time and two after, ordered by how close they
+are — the alternative search guarantees a choice on each side, so a full evening
+is never answered only with later evenings.
+
+**A failure does not recite a reference.** On MCP the correlation id is the only
+handle a caller has, so the error carries it. Reading twenty-six characters down
+a phone line is not that; Vapi already holds the call, with the number that made
+it, so the call id goes into `Context` instead and every log line of the request
+carries it. Same diagnosis, without asking a customer to spell a ULID.
+
+There is deliberately **no availability lookup here**. It would be a second round
+trip and a second thing to say, for an answer the refusal above already contains.
+
+### Details that only matter once it is live
+
+- Vapi posts **every** event of a call to this one URL — status updates,
+  transcripts, the end-of-call report. Anything that is not a tool call comes
+  back `200` having done nothing, because any other status has the platform
+  retrying a message we were never meant to act on.
+- Several calls can arrive in one payload. Each is answered under its own
+  `toolCallId`, and **one failing call does not silence the others**: an
+  exception escaping to the framework would answer the whole batch with a 500,
+  which on a live call leaves the agent with nothing at all to say.
+- Both payload shapes are read: the flat `toolCallList`, and the OpenAI-shaped
+  `toolCalls` whose arguments arrive as a JSON string.
+- The endpoint is guarded by a shared secret, compared against
+  `INTEGRATION_SECRET` with `hash_equals`. It is accepted either as the
+  `X-Vapi-Secret` header or as an `Authorization: Bearer` token — one configured
+  value, so there is still only one thing to rotate. **An unset secret closes the
+  endpoint rather than opening it**; the opposite default is how a writable
+  endpoint ends up public without a single log line looking wrong. `.env.example`
+  ships `change-me` so the curl above works straight after `sail up`; change it
+  before the port is reachable from anywhere else.
+- **Configuring it in Vapi: use a Bearer credential, not the header.** Vapi
+  attaches `X-Vapi-Secret` to every server request itself, and sends it *empty*
+  when no server secret is set on their side — a custom header of that name
+  never arrives, because theirs wins. The symptom is misleading: the request
+  connects, the header is present, and the value is blank. Create a Bearer Token
+  credential on the tool with the token set to `INTEGRATION_SECRET`, leave the
+  header name as `Authorization`, and publish the tool. The plain header is for
+  curl and for anything else driving this directly.
+- A rejected request logs **why** it was rejected — nothing presented, or
+  presented and wrong — with the lengths and the names of whatever credential
+  headers did arrive, and never the values. "Wrong secret" on its own cannot be
+  acted on: a platform that drops a header, a tool still on an unpublished draft
+  and a genuinely mistyped value all reach the server looking identical.
+
+This has not been run against a live Vapi account. The payload shapes come from
+their documented format, and both of them — along with the batch, secret and
+failure behaviour above — are covered by
+[`tests/Feature/VapiWebhookTest.php`](tests/Feature/VapiWebhookTest.php).
 
 ---
 
@@ -908,6 +1017,7 @@ changing configuration. That is what makes putting the atomicity in Redis the
 ┌──────────────────────────────────────────────────────────────┐
 │ ENTRY — adapters                                              │
 │   MakeReservation · CheckAvailability   (MCP tools)           │
+│   VapiWebhookController                 (voice)               │
 │   Declare schemas, validate, shape output. No business rules. │
 └──────────────────────────┬───────────────────────────────────┘
                            │ ReservationDraft (immutable)

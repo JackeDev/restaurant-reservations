@@ -12,7 +12,17 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
-        //
+        /*
+         * The voice webhook is a machine-to-machine POST from a platform we do
+         * not host: no browser, no session, and therefore no token it could
+         * possibly send. It is authenticated by a shared secret header instead
+         * — see App\Http\Middleware\VerifyIntegrationSecret — which is what CSRF
+         * protection stands in for on a form.
+         *
+         * Left in place, this would answer every real call with a 419 while
+         * every test that posted directly to the controller still passed.
+         */
+        $middleware->validateCsrfTokens(except: ['webhooks/vapi']);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->shouldRenderJsonWhen(

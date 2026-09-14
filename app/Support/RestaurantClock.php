@@ -108,10 +108,8 @@ final class RestaurantClock
      */
     public function describeDate(CarbonImmutable $utc): string
     {
-        $date = $this->toLocal($utc)->startOfDay();
-        $today = $this->toLocal($this->now())->startOfDay();
-
-        $days = (int) round($today->diffInDays($date, false));
+        $local = $this->toLocal($utc);
+        $days = $this->daysFromToday($local);
 
         $relative = match (true) {
             $days === 0 => 'today',
@@ -121,7 +119,42 @@ final class RestaurantClock
             default => abs($days).' days ago',
         };
 
-        return $date->format('l').', '.$relative;
+        return $local->format('l').', '.$relative;
+    }
+
+    /**
+     * A date as a person would say it out loud: "tomorrow", or "Monday 15
+     * September".
+     *
+     * describeDate() states a date twice, in digits and in words, because a
+     * model reading JSON needs both to notice a day that drifted. Speech has the
+     * opposite problem — "2026-09-15, Monday, tomorrow" is unbearable to listen
+     * to — so this says it once, and says the part a caller would recognise.
+     *
+     * @param  CarbonImmutable  $utc  UTC.
+     */
+    public function speakDate(CarbonImmutable $utc): string
+    {
+        $local = $this->toLocal($utc);
+
+        return match ($this->daysFromToday($local)) {
+            0 => 'today',
+            1 => 'tomorrow',
+            default => $local->format('l j F'),
+        };
+    }
+
+    /**
+     * Whole days from today at the restaurant to the day of a local moment.
+     *
+     * Counted between the two days rather than between the two instants, so
+     * "tomorrow" means the next calendar day and not twenty-four hours.
+     */
+    private function daysFromToday(CarbonImmutable $local): int
+    {
+        $today = $this->toLocal($this->now())->startOfDay();
+
+        return (int) round($today->diffInDays($local->startOfDay(), false));
     }
 
     /**

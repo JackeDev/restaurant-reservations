@@ -6,9 +6,10 @@
  * stays in memory, which means reading opening hours costs zero queries and zero
  * cache lookups on every request.
  *
- * Changing these values permanently requires `php artisan octane:reload`.
- * To adjust a single service's capacity on the fly, use `restaurant:capacity`,
- * which edits the live Redis counter instead.
+ * Changing these values requires `php artisan octane:reload`, since each worker
+ * read them at boot. Existing reservations are never re-validated against them:
+ * a confirmed booking is a promise, so config only governs what may be sold from
+ * now on, never what has already been sold.
  */
 return [
 

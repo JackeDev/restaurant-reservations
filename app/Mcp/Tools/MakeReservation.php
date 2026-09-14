@@ -10,6 +10,7 @@ use App\Enums\TimeSource;
 use App\Mcp\Concerns\ReportsFailures;
 use App\Services\ReservationService;
 use App\Services\TimeResolver;
+use App\Support\FreeText;
 use App\Support\RestaurantClock;
 use Illuminate\Contracts\JsonSchema\JsonSchema;
 use Illuminate\JsonSchema\Types\Type;
@@ -191,7 +192,7 @@ class MakeReservation extends Tool
                 customerPhone: $input['customer_phone'] ?? null,
                 partySize: $input['party_size'],
                 requestedFor: $when->at,
-                notes: $this->sanitise($input['notes'] ?? null),
+                notes: FreeText::clean($input['notes'] ?? null),
                 channel: BookingChannel::Mcp,
             ));
 
@@ -271,23 +272,5 @@ class MakeReservation extends Tool
         ], $result->alternatives);
 
         return $payload;
-    }
-
-    /**
-     * Normalise free text: strip control and formatting characters that would
-     * otherwise corrupt logs or disguise how the note reads.
-     *
-     * This is data hygiene, not a security filter. Nothing is blocked by
-     * content: the note is stored as written and only ever escaped on output.
-     */
-    private function sanitise(?string $notes): ?string
-    {
-        if ($notes === null) {
-            return null;
-        }
-
-        $clean = trim((string) preg_replace('/[\p{Cc}\p{Cf}]/u', '', $notes));
-
-        return $clean === '' ? null : $clean;
     }
 }

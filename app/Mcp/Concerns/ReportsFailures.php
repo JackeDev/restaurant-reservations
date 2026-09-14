@@ -2,9 +2,7 @@
 
 namespace App\Mcp\Concerns;
 
-use Illuminate\Support\Facades\Context;
-use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Str;
+use App\Support\FailureReference;
 use Laravel\Mcp\Response;
 use Throwable;
 
@@ -21,30 +19,16 @@ use Throwable;
  * failed, reference 01K7B8ZQ4X" and that is a grep away from the full exception:
  *
  *   ./vendor/bin/sail artisan pail --filter="01K7B8ZQ4X"
- *   grep 01K7B8ZQ4X storage/logs/laravel.log | jq .
+ *   ./vendor/bin/sail logs laravel.test | grep 01K7B8ZQ4X
  *
- * Masked outward, complete inward.
+ * The recording itself is FailureReference's job, because the voice webhook
+ * needs the identical treatment and only words the answer differently.
  */
 trait ReportsFailures
 {
     protected function failed(Throwable $e): Response
     {
-        /*
-         * Normally set by AssignCorrelationId. The fallback covers the stdio
-         * transport, which never passes through HTTP middleware — a reference
-         * nobody can correlate still beats telling the customer nothing.
-         */
-        $reference = (string) (Context::get('correlation_id') ?? Str::ulid());
-
-        Log::error('tool.failed', [
-            'tool' => $this->name(),
-            'exception' => $e::class,
-            'message' => $e->getMessage(),
-            'at' => $e->getFile().':'.$e->getLine(),
-        ]);
-
-        // Hands the exception, with its trace, to the configured handler.
-        report($e);
+        $reference = FailureReference::for($e, 'tool.failed', ['tool' => $this->name()]);
 
         return Response::error(sprintf(
             'Something went wrong while handling that request, and no reservation was made. Quote reference %s to have it looked up.',
